@@ -17,7 +17,7 @@ export default function Upload({ isOpen, onClose }) {
 
     const handleLogin = async () => {
         try {
-            const res = await fetch('http://localhost:4000/api/admin/login', {
+            const res = await fetch('/api/admin/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password })
@@ -54,7 +54,7 @@ export default function Upload({ isOpen, onClose }) {
         if (date) formData.append('date', date);
 
         try {
-            const res = await fetch('http://localhost:4000/api/admin/upload', {
+            const res = await fetch('/api/admin/upload', {
                 method: 'POST',
                 body: formData,
             });
@@ -76,7 +76,7 @@ export default function Upload({ isOpen, onClose }) {
 
     const loadSeatingData = async () => {
         try {
-            const res = await fetch(`http://localhost:4000/api/admin/seating?username=${username}&password=${password}`);
+            const res = await fetch(`/api/admin/seating?username=${username}&password=${password}`);
             if (!res.ok) throw new Error('Failed to load data');
             const data = await res.json();
             setSeatingData(data);
@@ -88,7 +88,7 @@ export default function Upload({ isOpen, onClose }) {
 
     const handleDelete = async (reg_no, date, session) => {
         try {
-            const res = await fetch('http://localhost:4000/api/admin/seating', {
+            const res = await fetch('/api/admin/seating', {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password, reg_no, date, session })
@@ -106,72 +106,58 @@ export default function Upload({ isOpen, onClose }) {
     if (!isOpen) return null;
 
     return (
-        <div style={{
-            position: 'fixed', top: 0, left: 0, width: '100%', height: '100%', 
-            backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', 
-            justifyContent: 'center', alignItems: 'center', overflowY: 'auto'
-        }}>
-            <div style={{ 
-                padding: 20, background: 'white', borderRadius: 5, 
-                boxShadow: '0 2px 10px rgba(0,0,0,0.1)', width: '90%', maxWidth: 800,
-                margin: '20px 0'
-            }}>
-                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+        <div className="admin-modal">
+            <div className="admin-panel">
+                <div className="admin-panel-header">
                     <h3>Admin Panel</h3>
-                    <button onClick={onClose} style={{background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer'}}>&times;</button>
+                    <button onClick={onClose} className="btn btn-plain">&times;</button>
                 </div>
 
                 {!isLoggedIn ? (
-                    <div style={{ display: 'flex', gap: 8, marginTop: 16, flexDirection: 'column' }}>
+                    <div className="admin-form">
                         <input 
                             type="text" 
                             placeholder="Username" 
                             value={username} 
                             onChange={e => setUsername(e.target.value)} 
-                            style={{ padding: 8 }} 
+                            className="admin-input" 
                         />
                         <input 
                             type="password" 
                             placeholder="Password" 
                             value={password} 
                             onChange={e => setPassword(e.target.value)} 
-                            style={{ padding: 8 }} 
+                            className="admin-input" 
                         />
                         <button 
                             onClick={handleLogin} 
-                            style={{ padding: '8px 12px', backgroundColor: '#1a237e', color: 'white', border: 'none', borderRadius: '4px' }}
+                            className="btn btn-primary"
                         >
                             Login
                         </button>
                     </div>
                 ) : (
                     <>
-                        <div style={{ display: 'flex', gap: 8, marginTop: 16, flexDirection: 'column' }}>
+                        <div className="admin-upload">
                             <h4>Upload Excel File</h4>
                             <input 
                                 type="text" 
                                 placeholder="Optional date override (DD.MM.YYYY)" 
                                 value={date} 
                                 onChange={e => setDate(e.target.value)} 
-                                style={{ padding: 8 }} 
+                                className="admin-input" 
                             />
-                            <div style={{ display: 'flex', gap: 8 }}>
+                            <div className="admin-upload-row">
                                 <input 
                                     type="file" 
                                     onChange={handleFileChange} 
                                     accept=".xlsx,.xls" 
-                                    style={{ flex: 1, padding: 8 }} 
+                                    className="admin-file-input" 
                                 />
                                 <button 
                                     onClick={handleUpload} 
                                     disabled={uploading}
-                                    style={{ 
-                                        padding: '8px 12px',
-                                        backgroundColor: uploading ? '#ccc' : '#1a237e',
-                                        color: 'white',
-                                        border: 'none',
-                                        borderRadius: '4px'
-                                    }}
+                                    className={"btn " + (uploading ? 'btn-disabled' : 'btn-primary')}
                                 >
                                     {uploading ? 'Uploading...' : 'Upload'}
                                 </button>
@@ -179,92 +165,53 @@ export default function Upload({ isOpen, onClose }) {
                         </div>
 
                         <div style={{ marginTop: 20 }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div className="admin-data-header">
                                 <h4>Seating Arrangements</h4>
-                                <button 
-                                    onClick={loadSeatingData}
-                                    style={{
-                                        padding: '4px 8px',
-                                        backgroundColor: '#1a237e',
-                                        color: 'white',
-                                        border: 'none',
-                                        borderRadius: '4px'
-                                    }}
-                                >
-                                    Refresh Data
-                                </button>
+                                <button className="btn btn-primary" onClick={loadSeatingData}>Refresh Data</button>
                             </div>
 
                             {showData && (
-                                <div style={{ overflowX: 'auto', marginTop: 10 }}>
-                                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                <div className="admin-table-wrap">
+                                    <table className="admin-table">
                                         <thead>
                                             <tr>
-                                                <th style={tableHeaderStyle}>Reg No</th>
-                                                <th style={tableHeaderStyle}>Course Code</th>
-                                                <th style={tableHeaderStyle}>Course Title</th>
-                                                <th style={tableHeaderStyle}>Room</th>
-                                                <th style={tableHeaderStyle}>Seat No</th>
-                                                <th style={tableHeaderStyle}>Date</th>
-                                                <th style={tableHeaderStyle}>Session</th>
-                                                <th style={tableHeaderStyle}>Action</th>
+                                                <th>Reg No</th>
+                                                <th>Course Code</th>
+                                                <th>Course Title</th>
+                                                <th>Room</th>
+                                                <th>Seat No</th>
+                                                <th>Date</th>
+                                                <th>Session</th>
+                                                <th>Action</th>
+                                                <th>Debug</th>
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {seatingData.map((row, index) => (
                                                 <tr key={index}>
-                                                    <td style={tableCellStyle}>{row.reg_no}</td>
-                                                    <td style={tableCellStyle}>{row.course_code || '—'}</td>
-                                                    <td style={tableCellStyle}>{row.course_title || '—'}</td>
-                                                    <td style={tableCellStyle}>{row.room || '103'}</td>
-                                                    <td style={tableCellStyle}>{
-                                                        row.seat_no ? row.seat_no : 
-                                                        (row.reg_no && row.room ? 
-                                                            row.reg_no.slice(-2) : '—')
-                                                    }</td>
-                                                    <td style={tableCellStyle}>{row.date || '25.10.2025'}</td>
-                                                    <td style={tableCellStyle}>{row.session || 'FN'}</td>
-                                                    <td style={tableCellStyle}>
-                                                        <button
-                                                            onClick={() => handleDelete(row.reg_no, row.date, row.session)}
-                                                            style={{
-                                                                padding: '4px 8px',
-                                                                backgroundColor: '#dc3545',
-                                                                color: 'white',
-                                                                border: 'none',
-                                                                borderRadius: '4px',
-                                                                cursor: 'pointer'
-                                                            }}
-                                                        >
-                                                            Delete
-                                                        </button>
+                                                    <td>{row.reg_no}</td>
+                                                    <td>{row.course_code || '—'}</td>
+                                                    <td>{row.course_title || '—'}</td>
+                                                    <td>{row.room || '103'}</td>
+                                                    <td>{row.seat_no ? row.seat_no : (row.reg_no && row.room ? row.reg_no.slice(-2) : '—')}</td>
+                                                    <td>{row.date || '—'}</td>
+                                                    <td>{row.session || 'FN'}</td>
+                                                    <td>
+                                                        <button className="btn btn-danger" onClick={() => handleDelete(row.reg_no, row.date, row.session)}>Delete</button>
                                                     </td>
-                                                    <td style={tableCellStyle}>
-                                                        <button
-                                                            onClick={async () => {
-                                                                try {
-                                                                    const res = await fetch(
-                                                                        `http://localhost:4000/api/admin/debug/student/${row.reg_no}?username=${username}&password=${password}`
-                                                                    );
-                                                                    const data = await res.json();
-                                                                    console.log('Raw DB record:', data);
-                                                                    alert(JSON.stringify(data, null, 2));
-                                                                } catch (e) {
-                                                                    console.error('Debug error:', e);
-                                                                }
-                                                            }}
-                                                            style={{
-                                                                padding: '4px 8px',
-                                                                backgroundColor: '#1a237e',
-                                                                color: 'white',
-                                                                border: 'none',
-                                                                borderRadius: '4px',
-                                                                cursor: 'pointer',
-                                                                marginLeft: '8px'
-                                                            }}
-                                                        >
-                                                            Debug
-                                                        </button>
+                                                    <td>
+                                                        <button className="btn btn-primary" onClick={async () => {
+                                                            try {
+                                                                const res = await fetch(
+                                                                    `/api/admin/debug/student/${row.reg_no}?username=${username}&password=${password}`
+                                                                );
+                                                                const data = await res.json();
+                                                                console.log('Raw DB record:', data);
+                                                                alert(JSON.stringify(data, null, 2));
+                                                            } catch (e) {
+                                                                console.error('Debug error:', e);
+                                                            }
+                                                        }}>Debug</button>
                                                     </td>
                                                 </tr>
                                             ))}

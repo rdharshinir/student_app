@@ -19,6 +19,30 @@ export default function App(){
     return s;
   }
 
+  // Try to parse common date formats and return a Date object or null
+  function parseDateString(s) {
+    if (!s) return null;
+    // If already a Date
+    if (s instanceof Date) return isNaN(s.getTime()) ? null : s;
+    // Try native parse first (ISO, etc.)
+    const iso = new Date(s);
+    if (!isNaN(iso.getTime())) return iso;
+
+    // Try patterns like DD.MM.YYYY, DD/MM/YYYY, DD-MM-YYYY
+    const m = String(s).trim().match(/^(\d{1,2})[\.\/-](\d{1,2})[\.\/-](\d{2,4})$/);
+    if (m) {
+      let day = parseInt(m[1], 10);
+      let month = parseInt(m[2], 10) - 1;
+      let year = parseInt(m[3], 10);
+      if (year < 100) year += 2000;
+      const d = new Date(year, month, day);
+      if (!isNaN(d.getTime())) return d;
+    }
+
+    // Could not parse
+    return null;
+  }
+
   // Parse dates coming from the backend. The excel worker stores dates as 'DD.MM.YYYY'.
   // Convert common formats (DD.MM.YYYY, DD/MM/YYYY, YYYY-MM-DD) to an ISO string.
   function parseBackendDate(val) {
