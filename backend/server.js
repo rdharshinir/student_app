@@ -50,28 +50,43 @@ db.serialize(() => {
     password TEXT
   )`);
 
-  // Insert default admin if not exists
-  db.get("SELECT COUNT(*) as cnt FROM admin", (err, row) => {
-    if (!err && (!row || row.cnt === 0)) {
-      db.run("INSERT INTO admin (username, password) VALUES (?, ?)", 
-        ['admin', 'admin123']);
-      console.log('Created default admin account: username=admin, password=admin123');
+  // Ensure default admin exists and password is always correct
+  db.run(
+    "INSERT INTO admin (username, password) VALUES (?, ?) " +
+    "ON CONFLICT(username) DO UPDATE SET password = excluded.password",
+    ['Kgkite', 'Kite@123'],
+    (err) => {
+      if (err) {
+        console.error('Failed to upsert default admin user:', err.message);
+      } else {
+        console.log('Default admin ensured: username=Kgkite, password=Kite@123');
+      }
     }
-  });
+  );
 });
 
 // Endpoint: Admin login
 app.post('/api/admin/login', express.json(), (req, res) => {
   const { username, password } = req.body;
   
+  console.log(`Login attempt: Username - ${username}, Password - ${password}`);
+
   if (!username || !password) {
+    console.log('Login failed: Username or password missing.');
     return res.status(400).json({ error: 'Username and password required' });
   }
 
   db.get('SELECT username FROM admin WHERE username = ? AND password = ?',
     [username, password], (err, row) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!row) return res.status(401).json({ error: 'Invalid credentials' });
+      if (err) {
+        console.error('Database error during login:', err.message);
+        return res.status(500).json({ error: err.message });
+      }
+      if (!row) {
+        console.log('Login failed: Invalid credentials for user', username);
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+      console.log('Login successful for user', username);
       res.json({ success: true });
     });
 });

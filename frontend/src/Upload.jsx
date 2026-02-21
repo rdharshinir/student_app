@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 export default function Upload({ isOpen, onClose }) {
     const [file, setFile] = useState(null);
@@ -16,6 +16,7 @@ export default function Upload({ isOpen, onClose }) {
     };
 
     const handleLogin = async () => {
+        console.log(`Frontend: Attempting login for Username: ${username}, Password: ${password}`);
         try {
             const res = await fetch('/api/admin/login', {
                 method: 'POST',
@@ -32,6 +33,8 @@ export default function Upload({ isOpen, onClose }) {
             if (data.success) {
                 setIsLoggedIn(true);
                 setMessage({ type: 'success', text: 'Login successful' });
+            } else {
+                throw new Error(data.error || 'Login failed');
             }
         } catch (e) {
             setMessage({ type: 'error', text: e.message });
@@ -60,7 +63,7 @@ export default function Upload({ isOpen, onClose }) {
             });
 
             if (!res.ok) {
-                const errBody = await res.json();
+                const errBody = await res.json().catch(() => ({ error: 'Upload failed with non-JSON response' }));
                 throw new Error(errBody.error || `Upload failed`);
             }
 
@@ -91,7 +94,7 @@ export default function Upload({ isOpen, onClose }) {
             const res = await fetch('/api/admin/seating', {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password, reg_no, date, session })
+                body: JSON.stringify({ reg_no, date, session, username, password })
             });
 
             if (!res.ok) throw new Error('Failed to delete record');
@@ -102,6 +105,12 @@ export default function Upload({ isOpen, onClose }) {
             setMessage({ type: 'error', text: e.message });
         }
     };
+    
+    useEffect(() => {
+        if (isLoggedIn) {
+            loadSeatingData();
+        }
+    }, [isLoggedIn]);
 
     if (!isOpen) return null;
 
@@ -115,6 +124,7 @@ export default function Upload({ isOpen, onClose }) {
 
                 {!isLoggedIn ? (
                     <div className="admin-form">
+                        <h4>Admin Login</h4>
                         <input 
                             type="text" 
                             placeholder="Username" 
@@ -138,6 +148,10 @@ export default function Upload({ isOpen, onClose }) {
                     </div>
                 ) : (
                     <>
+                        <div className="admin-welcome">
+                            <p>Welcome, {username}!</p>
+                            <button onClick={() => setIsLoggedIn(false)} className="btn btn-secondary">Logout</button>
+                        </div>
                         <div className="admin-upload">
                             <h4>Upload Excel File</h4>
                             <input 
@@ -238,16 +252,3 @@ export default function Upload({ isOpen, onClose }) {
         </div>
     );
 }
-
-const tableHeaderStyle = {
-    padding: '8px',
-    backgroundColor: '#1a237e',
-    color: 'white',
-    textAlign: 'left',
-    borderBottom: '1px solid #ddd'
-};
-
-const tableCellStyle = {
-    padding: '8px',
-    borderBottom: '1px solid #ddd'
-};

@@ -1,34 +1,28 @@
 // App.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Upload from './Upload';
+import QRCode from 'qrcode';
+import html2canvas from 'html2canvas';
 import './App.css';
 
 export default function App(){
   const [reg, setReg] = useState('');
   const [session, setSession] = useState('FN');
   const [result, setResult] = useState(null);
-
-  // Clean/sanitize values coming from the backend/Excel before rendering.
-  // Treat empty strings, common stringified NaN/None/null values as missing.
-  function sanitize(val) {
-    if (val === null || val === undefined) return null;
-    const s = String(val).trim();
-    if (!s) return null;
-    const low = s.toLowerCase();
-    if (low === 'nan' || low === 'none' || low === 'null' || low === 'nan.0') return null;
-    return s;
-  }
+  const [err, setErr] = useState(null);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [studentPhoto, setStudentPhoto] = useState(null);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState(null);
+  const [showSkeleton, setShowSkeleton] = useState(false);
+  const ticketRef = useRef(null);
 
   // Try to parse common date formats and return a Date object or null
   function parseDateString(s) {
     if (!s) return null;
-    // If already a Date
     if (s instanceof Date) return isNaN(s.getTime()) ? null : s;
-    // Try native parse first (ISO, etc.)
     const iso = new Date(s);
     if (!isNaN(iso.getTime())) return iso;
-
-    // Try patterns like DD.MM.YYYY, DD/MM/YYYY, DD-MM-YYYY
     const m = String(s).trim().match(/^(\d{1,2})[\.\/-](\d{1,2})[\.\/-](\d{2,4})$/);
     if (m) {
       let day = parseInt(m[1], 10);
@@ -38,92 +32,88 @@ export default function App(){
       const d = new Date(year, month, day);
       if (!isNaN(d.getTime())) return d;
     }
-
-    // Could not parse
     return null;
   }
 
-  // Parse dates coming from the backend. The excel worker stores dates as 'DD.MM.YYYY'.
-  // Convert common formats (DD.MM.YYYY, DD/MM/YYYY, YYYY-MM-DD) to an ISO string.
+  // Parse dates coming from the backend
   function parseBackendDate(val) {
     if (!val && val !== 0) return null;
     const s = String(val).trim();
     if (!s) return null;
-
-    // If already ISO-like or parseable by Date, prefer that
     const isoAttempt = new Date(s);
     if (!isNaN(isoAttempt.getTime())) return isoAttempt.toISOString();
-
-    // Handle dd.mm.yyyy or dd/mm/yyyy or dd-mm-yyyy
     const m = s.match(/^(\d{1,2})[\.\/-](\d{1,2})[\.\/-](\d{2,4})$/);
     if (m) {
       let day = parseInt(m[1], 10);
       let month = parseInt(m[2], 10);
       let year = parseInt(m[3], 10);
-      if (year < 100) year += 2000; // two-digit year -> 20xx
+      if (year < 100) year += 2000;
       const dt = new Date(year, month - 1, day);
       if (!isNaN(dt.getTime())) return dt.toISOString();
     }
-
-    // Try parsing Excel serial numbers (e.g. 44954)
     if (/^\d+$/.test(s)) {
       try {
         const serial = Number(s);
-        // Excel's epoch: 1899-12-30; Excel has a fake leap day at serial 60
         const excelEpoch = new Date(Date.UTC(1899, 11, 30));
         let days = Math.floor(serial);
-        if (serial > 60) days -= 1; // adjust for Excel leap bug
+        if (serial > 60) days -= 1;
         const dt = new Date(excelEpoch.getTime() + days * 24 * 60 * 60 * 1000);
         if (!isNaN(dt.getTime())) return dt.toISOString();
       } catch (err) {
         // fallthrough
       }
     }
-
     return null;
   }
-  const [err, setErr] = useState(null);
-  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
+
+  // Generate QR code when result changes
+  useEffect(() => {
+    if (result) {
+      const qrText = `Reg: ${result.reg_no}\nSeat: ${result.seat_no || result.reg_no?.slice(-2) || 'N/A'}\nRoom: ${result.room || '103'}\nDate: ${formatDateForDisplay(result.date)}\nSession: ${result.session || 'FN'}`;
+      QRCode.toDataURL(qrText, { width: 120, margin: 1 })
+        .then(url => setQrCodeDataUrl(url))
+        .catch(err => console.error('QR code generation failed:', err));
+    } else {
+      setQrCodeDataUrl(null);
+    }
+  }, [result]);
 
   async function lookup(){
     setLoading(true);
+    setShowSkeleton(true);
     setErr(null);
     setResult(null);
+    setStudentPhoto(null);
     
     if(!reg) { 
       setErr('Please enter your Registration Number');
       setLoading(false);
+      setShowSkeleton(false);
       return;
     }
     
     try {
       const res = await fetch(`/api/student?regno=${encodeURIComponent(reg.trim())}&session=${encodeURIComponent(session)}`);
-
-      // Read content-type early so we can handle HTML (or other non-JSON) responses
       const contentType = (res.headers.get('content-type') || '').toLowerCase();
 
       if (res.status === 404) {
-        // Specific user-facing message requested
         setErr('Hall is not allocated for you');
         setLoading(false);
+        setShowSkeleton(false);
         return;
       }
 
       if (!res.ok) {
-        // Try to parse JSON error body when available, otherwise fall back to text
         if (contentType.includes('application/json')) {
           const errBody = await res.json().catch(() => ({}));
           throw new Error(errBody.error || `Server error (${res.status})`);
         } else {
           const txt = await res.text().catch(() => '');
-          // If backend returned HTML (common for 500 pages or static responses), surface a helpful message
           const short = txt ? (txt.slice(0, 300) + (txt.length > 300 ? '…' : '')) : '';
           throw new Error(short ? `Server returned non-JSON response (${res.status}): ${short}` : `Server error (${res.status})`);
         }
       }
 
-      // For successful responses we still must ensure the body is JSON. If not, read text and report it.
       if (!contentType.includes('application/json')) {
         const txt = await res.text().catch(() => '');
         console.error('Expected JSON from /api/student but received:', txt);
@@ -132,26 +122,22 @@ export default function App(){
       }
 
       const data = await res.json();
-
-      // Sanitize fields so UI won't display 'nan' or other placeholders from Excel
       const cleaned = {
-        reg_no: sanitize(data.reg_no),
-        seat_no: sanitize(data.seat_no),
-        room: sanitize(data.room),
-        course_code: sanitize(data.course_code),
-        // Treat common placeholders like '-' as missing
+        reg_no: data.reg_no,
+        seat_no: data.seat_no,
+        room: data.room,
+        course_code: data.course_code,
         course_title: (function(){
-          const t = sanitize(data.course_title);
+          const t = data.course_title;
           if (!t) return null;
           if (t === '-' || t === '—') return null;
           return t;
         })(),
-        // Parse backend date formats into ISO string; if unparseable, set null so UI shows '—'
         date: (function(){
           const p = parseBackendDate(data.date);
           return p || null;
         })(),
-        session: sanitize(data.session)
+        session: data.session
       };
 
       setResult(cleaned);
@@ -159,6 +145,7 @@ export default function App(){
       setErr('Unable to fetch seating details: ' + e.message);
     } finally {
       setLoading(false);
+      setShowSkeleton(false);
     }
   }
 
@@ -174,335 +161,609 @@ export default function App(){
     });
   }
 
+  function handlePhotoUpload(e) {
+    const file = e.target.files[0];
+    if (file && file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setStudentPhoto(reader.result);
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  async function downloadAsImage() {
+    if (!ticketRef.current) return;
+    try {
+      const canvas = await html2canvas(ticketRef.current, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+        logging: false
+      });
+      const link = document.createElement('a');
+      link.download = `Hall_Ticket_${result.reg_no}_${Date.now()}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    } catch (err) {
+      console.error('Failed to download image:', err);
+      alert('Failed to download image. Please try again.');
+    }
+  }
+
+  function shareViaEmail() {
+    const subject = encodeURIComponent(`Hall Ticket - ${result.reg_no}`);
+    const body = encodeURIComponent(
+      `Hall Ticket Details:\n\n` +
+      `Registration Number: ${result.reg_no}\n` +
+      `Seat Number: ${result.seat_no || result.reg_no?.slice(-2) || 'N/A'}\n` +
+      `Room/Hall: ${result.room || '103'}\n` +
+      `Course Code: ${result.course_code || 'N/A'}\n` +
+      `Date: ${formatDateForDisplay(result.date)}\n` +
+      `Session: ${result.session === 'FN' ? 'Forenoon (FN)' : result.session === 'AN' ? 'Afternoon (AN)' : result.session || 'FN'}\n\n` +
+      `Please find your hall ticket attached.`
+    );
+    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+  }
+
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#f0f2f5', paddingTop: '20px' }}>
+    <div style={{ minHeight: '100vh', backgroundColor: '#f4f6fb', paddingTop: '20px' }}>
+      <div className="floating-icon small floating-icon--top-left" />
+      <div className="floating-icon large floating-icon--bottom-right" />
+
       <div className="content-container">
-        <div className="header" style={{
-          backgroundColor: 'white',
-          padding: '20px',
-          borderRadius: '8px',
-          marginBottom: '30px',
-          textAlign: 'center',
-          boxShadow: '0 2px 4px rgba(0,0,0,0.1)'
-        }}>
-          <img src="https://miro.medium.com/v2/resize:fit:2400/1*aDT5b3T7zBUNALBRlikHjg.jpeg" 
-               alt="KGiSL Logo" 
-               style={{ height: '60px', marginBottom: '10px' }} />
-          <h1 style={{ 
-            fontSize: '24px', 
-            color: '#333', 
-            marginBottom: '5px',
-            fontWeight: 'bold' 
-          }}>KGiSL Institute of Technology</h1>
-          <p style={{ 
-            fontSize: '14px', 
-            color: '#666', 
-            margin: '5px 0' 
-          }}>(An Autonomous Institution)</p>
-          <p style={{ 
-            fontSize: '12px', 
-            color: '#666', 
-            margin: '5px 0',
-            fontStyle: 'italic'
-          }}>Affiliated to Anna University, Approved by AICTE, Recognized by UGC, Accredited by NAAC & NBA (B.E-CSE,B.E-ECE, B.Tech-IT)</p>
-        </div>
-        <div style={{position: 'absolute', top: 20, right: 20}}>
-            <button onClick={() => setIsUploadModalOpen(true)} className="upload-btn">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="feather feather-upload-cloud">
-                    <path d="M12 2a10 10 0 1 1-10 10" />
-                    <path d="M12 18a10 10 0 1 0 0-20 10 10 0 0 0 0 20z" />
-                    <path d="M12 12v-6" />
-                    <path d="M12 12l-3-3" />
-                    <path d="M12 12l3-3" />
-                </svg>
-            </button>
-        </div>
-        <h2>Hall seating — lookup by Registration No</h2>
-        <div className="search-container">
-          <input 
-            value={reg} 
-            onChange={e=>setReg(e.target.value)} 
-            placeholder="Enter Registration Number" 
-            style={{
-              padding: '12px 15px',
-              borderRadius: '6px',
-              border: '1px solid #ddd',
-              fontSize: '15px',
-              width: '250px',
-              marginRight: '10px'
-            }}
-          />
-          <select 
-            value={session} 
-            onChange={e=>setSession(e.target.value)}
-            style={{
-              padding: '12px 15px',
-              borderRadius: '6px',
-              border: '1px solid #ddd',
-              fontSize: '15px',
-              marginRight: '10px',
-              backgroundColor: 'white'
-            }}
-          >
-              <option value="FN">FN</option>
-              <option value="AN">AN</option>
-          </select>
-          <button 
-            onClick={lookup}
-            disabled={loading}
-            style={{
-              padding: '12px 25px',
-              borderRadius: '6px',
-              border: 'none',
-              backgroundColor: loading ? '#ccc' : '#1a237e',
-              color: 'white',
-              fontSize: '15px',
-              cursor: loading ? 'default' : 'pointer',
-              transition: 'all 0.3s',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
-          >
-            {loading ? 'Searching...' : 'Search'}
-          </button>
-        </div>
-        {err && (
-          <div style={{
-            color: '#d32f2f',
-            marginTop: '15px',
-            padding: '10px 15px',
-            backgroundColor: '#ffebee',
-            borderRadius: '4px',
-            fontSize: '14px',
-            textAlign: 'center'
-          }}>
-            {err}
-          </div>
-        )}
-        {result && (
-          <div style={{
-            marginTop: 20,
-            padding: 30,
-            borderRadius: 8,
-            backgroundColor: 'white',
-            boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
-            color: '#333',
-            maxWidth: '600px',
-            margin: '20px auto',
-            border: '1px solid #ddd'
-          }}>
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              marginBottom: '24px',
-              borderBottom: '2px solid #1a237e',
-              paddingBottom: '16px'
-            }}>
-              <h2 style={{
-                color: '#1a237e',
-                fontSize: '24px',
-                fontWeight: 'bold',
-                marginBottom: '16px'
-              }}>Examinations Hall Seating Details</h2>
-              <img src="https://miro.medium.com/v2/resize:fit:2400/1*aDT5b3T7zBUNALBRlikHjg.jpeg"
-                alt="KGiSL Logo"
-                style={{ 
-                  height: '80px', 
-                  marginBottom: '12px',
-                  objectFit: 'contain'
-                }} />
-              <div style={{
-                textAlign: 'center',
-                marginBottom: '8px'
-              }}>
-                <h3 style={{
-                  fontSize: '20px',
-                  color: '#333',
-                  fontWeight: 'bold',
-                  marginBottom: '4px'
-                }}>KGiSL Institute of Technology</h3>
-                <p style={{
-                  fontSize: '14px',
-                  color: '#666'
-                }}>Affiliated to Anna University · Approved by AICTE</p>
+        <header className="app-header">
+          <div className="app-header-left">
+            <div className="app-header-logo">
+              <span>KITE</span>
+            </div>
+            <div>
+              <div className="app-header-text-primary">KGiSL Institute of Technology</div>
+              <div className="app-header-text-sub">
+                Autonomous · Affiliated to Anna University · Approved by AICTE · NAAC &amp; NBA (CSE, ECE, IT)
+              </div>
+              <div className="app-header-badge">
+                <span className="app-header-kite">Exam Seating</span>
+                <span>Digital Hall Ticket Lookup</span>
               </div>
             </div>
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: '150px 1fr',
-              gap: '24px',
-              padding: '0 16px'
-            }}>
+          </div>
+
+          <button
+            onClick={() => setIsUploadModalOpen(true)}
+            className="upload-btn"
+            title="Admin – KITE upload portal"
+          >
+            <svg
+              className="upload-kite-icon"
+              viewBox="0 0 24 24"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M4 4l8-2 8 2-8 16z"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+              />
+              <path
+                d="M12 10v-4m0 0l-2 2m2-2l2 2"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span className="upload-kite-text">KITE</span>
+          </button>
+
+          <div className="app-header-orbit">
+            <div className="app-header-orbit-inner" />
+            <div className="app-header-orbit-dot" />
+          </div>
+        </header>
+
+        <h2 style={{ color: '#0f172a', textAlign: 'center', marginTop: '4px', fontSize: '1.5rem', fontWeight: '600' }}>
+          Hall seating — lookup by Registration No
+        </h2>
+
+        <div className="search-container">
+          <input
+            value={reg}
+            onChange={e => setReg(e.target.value)}
+            onKeyPress={e => e.key === 'Enter' && !loading && lookup()}
+            placeholder="Enter Registration Number"
+            className="search-input"
+          />
+          <select
+            value={session}
+            onChange={e => setSession(e.target.value)}
+            className="search-select"
+          >
+            <option value="FN">FN</option>
+            <option value="AN">AN</option>
+          </select>
+          <button
+            onClick={lookup}
+            disabled={loading}
+            className={`search-button btn ${loading ? 'btn-disabled' : 'btn-primary'}`}
+          >
+            {loading ? (
+              <>
+                <span className="spinner" /> Searching...
+              </>
+            ) : (
+              'Search'
+            )}
+          </button>
+        </div>
+
+        {err && <div className="alert alert-error">{err}</div>}
+
+        {showSkeleton && !result && (
+          <div className="ticket-card ticket-card--skeleton">
+            <div className="ticket-header-skeleton" />
+            <div className="ticket-body-skeleton" />
+          </div>
+        )}
+
+        {result && (
+          <div
+            ref={ticketRef}
+            className="ticket-card"
+            style={{
+              marginTop: 20,
+              padding: 30,
+              borderRadius: 12,
+              backgroundColor: '#ffffff',
+              boxShadow: '0 22px 45px rgba(15, 23, 42, 0.16)',
+              color: '#0f172a',
+              maxWidth: '680px',
+              margin: '20px auto',
+              border: '1px solid rgba(191, 219, 254, 0.9)',
+              animation: 'fadeUp 320ms ease-out',
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                marginBottom: '24px',
+                borderBottom: '2px solid #1d4ed8',
+                paddingBottom: '16px',
+              }}
+            >
+              <h2
+                style={{
+                  color: '#1d4ed8',
+                  fontSize: '24px',
+                  fontWeight: 'bold',
+                  marginBottom: '16px',
+                }}
+              >
+                Examinations Hall Seating Details
+              </h2>
+              <img
+                src="https://miro.medium.com/v2/resize:fit:2400/1*aDT5b3T7zBUNALBRlikHjg.jpeg"
+                alt="KGiSL Logo"
+                style={{
+                  height: '80px',
+                  marginBottom: '12px',
+                  objectFit: 'contain',
+                }}
+              />
+              <div
+                style={{
+                  textAlign: 'center',
+                  marginBottom: '8px',
+                }}
+              >
+                <h3
+                  style={{
+                    fontSize: '20px',
+                    color: '#0f172a',
+                    fontWeight: 'bold',
+                    marginBottom: '4px',
+                  }}
+                >
+                  KGiSL Institute of Technology
+                </h3>
+                <p
+                  style={{
+                    fontSize: '14px',
+                    color: '#6b7280',
+                  }}
+                >
+                  Affiliated to Anna University · Approved by AICTE
+                </p>
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '160px 1fr',
+                gap: '24px',
+                padding: '0 16px',
+              }}
+            >
               {/* Left column for photo */}
               <div>
-                <div style={{
-                  width: '150px',
-                  height: '180px',
-                  border: '2px solid #1a237e',
-                  borderRadius: '4px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  backgroundColor: '#f5f5f5'
-                }}>
-                  <span style={{color: '#666', fontSize: '14px'}}>Photo</span>
+                <div
+                  style={{
+                    width: '160px',
+                    height: '200px',
+                    border: '2px solid #1d4ed8',
+                    borderRadius: '6px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: '#f9fafb',
+                    position: 'relative',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {studentPhoto ? (
+                    <img
+                      src={studentPhoto}
+                      alt="Student Photo"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        objectFit: 'cover',
+                      }}
+                    />
+                  ) : (
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '8px',
+                        padding: '12px',
+                      }}
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        width="48"
+                        height="48"
+                        fill="none"
+                        stroke="#1d4ed8"
+                        strokeWidth="1.5"
+                      >
+                        <rect x="3" y="3" width="18" height="18" rx="2" />
+                        <circle cx="8.5" cy="8.5" r="1.5" />
+                        <path d="M21 15l-5-5L5 21" />
+                      </svg>
+                      <span style={{ color: '#6b7280', fontSize: '12px', textAlign: 'center' }}>
+                        Photo
+                      </span>
+                    </div>
+                  )}
+                  <label
+                    style={{
+                      position: 'absolute',
+                      bottom: '4px',
+                      right: '4px',
+                      backgroundColor: '#1d4ed8',
+                      color: 'white',
+                      padding: '4px 8px',
+                      borderRadius: '4px',
+                      fontSize: '10px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                    }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                    Upload
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handlePhotoUpload}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
                 </div>
+                {qrCodeDataUrl && (
+                  <div
+                    style={{
+                      marginTop: '12px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '4px',
+                    }}
+                  >
+                    <img
+                      src={qrCodeDataUrl}
+                      alt="QR Code"
+                      style={{
+                        width: '120px',
+                        height: '120px',
+                        border: '1px solid #e5e7eb',
+                        borderRadius: '6px',
+                        padding: '8px',
+                        backgroundColor: '#ffffff',
+                      }}
+                    />
+                    <span style={{ fontSize: '10px', color: '#6b7280' }}>Scan for details</span>
+                  </div>
+                )}
               </div>
 
               {/* Right column for student details */}
-              <div style={{
-                display: 'grid',
-                gap: '16px',
-                fontSize: '15px'
-              }}>
-                
-                <div style={{display: 'grid', gap: '16px', marginBottom: '20px'}}>
-                  <div className="detail-row" style={{
-                    display: 'flex',
-                    gap: '32px'
-                  }}>
-                    <strong style={{color: '#1a237e', minWidth: '160px'}}>Register Number:</strong>
-                    <span style={{
-                      fontWeight: '500',
-                      color: '#333',
-                      flex: 1
-                    }}>{result.reg_no}</span>
+              <div
+                style={{
+                  display: 'grid',
+                  gap: '16px',
+                  fontSize: '15px',
+                }}
+              >
+                <div style={{ display: 'grid', gap: '16px', marginBottom: '20px' }}>
+                  <div
+                    className="detail-row"
+                    style={{
+                      display: 'flex',
+                      gap: '32px',
+                    }}
+                  >
+                    <strong style={{ color: '#1d4ed8', minWidth: '160px' }}>
+                      Register Number:
+                    </strong>
+                    <span
+                      style={{
+                        fontWeight: '500',
+                        color: '#0f172a',
+                        flex: 1,
+                      }}
+                    >
+                      {result.reg_no}
+                    </span>
                   </div>
-                  <div className="detail-row" style={{
-                    display: 'flex',
-                    gap: '32px'
-                  }}>
-                    <strong style={{color: '#1a237e', minWidth: '160px'}}>Seat Number:</strong>
-                    <span style={{
-                      fontWeight: '600',
-                      color: '#1a237e',
-                      flex: 1,
-                      backgroundColor: '#e3f2fd',
-                      padding: '4px 12px',
-                      borderRadius: '4px'
-                    }}>{
-                      result.seat_no ? result.seat_no : 
-                      (result.reg_no && result.room ? 
-                        result.reg_no.slice(-2) : '—')
-                    }</span>
+                  <div
+                    className="detail-row"
+                    style={{
+                      display: 'flex',
+                      gap: '32px',
+                    }}
+                  >
+                    <strong style={{ color: '#1d4ed8', minWidth: '160px' }}>
+                      Seat Number:
+                    </strong>
+                    <span
+                      style={{
+                        fontWeight: '600',
+                        color: '#1d4ed8',
+                        flex: 1,
+                        backgroundColor: '#e0ecff',
+                        padding: '4px 12px',
+                        borderRadius: '4px',
+                      }}
+                    >
+                      {result.seat_no
+                        ? result.seat_no
+                        : result.reg_no && result.room
+                        ? result.reg_no.slice(-2)
+                        : '—'}
+                    </span>
                   </div>
-                  <div className="detail-row" style={{
-                    display: 'flex',
-                    gap: '32px'
-                  }}>
-                    <strong style={{color: '#1a237e', minWidth: '160px'}}>Room / Hall:</strong>
-                    <span style={{
-                      fontWeight: '500',
-                      color: '#333',
-                      flex: 1
-                    }}>{result.room || '103'}</span>
+                  <div
+                    className="detail-row"
+                    style={{
+                      display: 'flex',
+                      gap: '32px',
+                    }}
+                  >
+                    <strong style={{ color: '#1d4ed8', minWidth: '160px' }}>
+                      Room / Hall:
+                    </strong>
+                    <span
+                      style={{
+                        fontWeight: '500',
+                        color: '#0f172a',
+                        flex: 1,
+                      }}
+                    >
+                      {result.room || '103'}
+                    </span>
                   </div>
                 </div>
-                <div style={{marginBottom: '20px'}}>
-                  <div style={{
-                    color: '#1a237e',
-                    fontWeight: 'bold',
-                    fontSize: '16px',
-                    marginBottom: '12px'
-                  }}>Course Information:</div>
-                  <div style={{display: 'grid', gap: '16px'}}>
-                    <div style={{
-                      display: 'flex',
-                      gap: '32px'
-                    }}>
-                      <strong style={{color: '#1a237e', minWidth: '160px'}}>Code:</strong>
-                      <span style={{
-                        fontWeight: '500',
-                        color: '#333',
-                        flex: 1
-                      }}>{result.course_code || '—'}</span>
+
+                <div style={{ marginBottom: '20px' }}>
+                  <div
+                    style={{
+                      color: '#1d4ed8',
+                      fontWeight: 'bold',
+                      fontSize: '16px',
+                      marginBottom: '12px',
+                    }}
+                  >
+                    Course Information:
+                  </div>
+                  <div style={{ display: 'grid', gap: '16px' }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '32px',
+                      }}
+                    >
+                      <strong style={{ color: '#1d4ed8', minWidth: '160px' }}>
+                        Code:
+                      </strong>
+                      <span
+                        style={{
+                          fontWeight: '500',
+                          color: '#0f172a',
+                          flex: 1,
+                        }}
+                      >
+                        {result.course_code || '—'}
+                      </span>
                     </div>
-                    <div style={{
-                      display: 'flex',
-                      gap: '32px'
-                    }}>
-                      <strong style={{color: '#1a237e', minWidth: '160px'}}>Title:</strong>
-                      <span style={{
-                        fontWeight: '500',
-                        color: '#333',
-                        flex: 1
-                      }}>{result.course_title || '—'}</span>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '32px',
+                      }}
+                    >
+                      <strong style={{ color: '#1d4ed8', minWidth: '160px' }}>
+                        Title:
+                      </strong>
+                      <span
+                        style={{
+                          fontWeight: '500',
+                          color: '#0f172a',
+                          flex: 1,
+                        }}
+                      >
+                        {result.course_title || '—'}
+                      </span>
                     </div>
                   </div>
                 </div>
-                
-                <div style={{
-                  borderTop: '1px solid #e0e0e0',
-                  paddingTop: '20px'
-                }}>
-                  <div style={{display: 'grid', gap: '16px'}}>
-                    <div style={{
-                      display: 'flex',
-                      gap: '32px'
-                    }}>
-                      <strong style={{color: '#1a237e', minWidth: '160px'}}>Date:</strong>
-                      <span style={{
-                        fontWeight: '500',
-                        color: '#333',
-                        flex: 1,
-                        backgroundColor: '#f5f5f5',
-                        padding: '4px 12px',
-                        borderRadius: '4px'
-                      }}>{formatDateForDisplay(result.date)}</span>
+
+                <div
+                  style={{
+                    borderTop: '1px solid rgba(209, 213, 219, 0.9)',
+                    paddingTop: '20px',
+                  }}
+                >
+                  <div style={{ display: 'grid', gap: '16px' }}>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '32px',
+                      }}
+                    >
+                      <strong style={{ color: '#1d4ed8', minWidth: '160px' }}>
+                        Date:
+                      </strong>
+                      <span
+                        style={{
+                          fontWeight: '500',
+                          color: '#0f172a',
+                          flex: 1,
+                          backgroundColor: '#f3f4ff',
+                          padding: '4px 12px',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        {formatDateForDisplay(result.date)}
+                      </span>
                     </div>
-                    <div style={{
-                      display: 'flex',
-                      gap: '32px'
-                    }}>
-                      <strong style={{color: '#1a237e', minWidth: '160px'}}>Session:</strong>
-                      <span style={{
-                        fontWeight: '500',
-                        color: '#333',
-                        flex: 1,
-                        backgroundColor: '#f5f5f5',
-                        padding: '4px 12px',
-                        borderRadius: '4px'
-                      }}>{result.session === 'FN' ? 'Forenoon (FN)' : 
-                         result.session === 'AN' ? 'Afternoon (AN)' : 
-                         result.session || 'FN'}</span>
+                    <div
+                      style={{
+                        display: 'flex',
+                        gap: '32px',
+                      }}
+                    >
+                      <strong style={{ color: '#1d4ed8', minWidth: '160px' }}>
+                        Session:
+                      </strong>
+                      <span
+                        style={{
+                          fontWeight: '500',
+                          color: '#0f172a',
+                          flex: 1,
+                          backgroundColor: '#f3f4ff',
+                          padding: '4px 12px',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        {result.session === 'FN'
+                          ? 'Forenoon (FN)'
+                          : result.session === 'AN'
+                          ? 'Afternoon (AN)'
+                          : result.session || 'FN'}
+                      </span>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Instructions Section */}
-            <div style={{
-              marginTop: '30px',
-              padding: '20px',
-              backgroundColor: '#f8f9fa',
-              borderRadius: '8px',
-              border: '1px solid #e0e0e0'
-            }}>
-              <h3 style={{
-                color: '#1a237e',
-                fontSize: '16px',
-                marginBottom: '12px',
-                fontWeight: 'bold'
-              }}>Instructions:</h3>
-              <ul style={{
-                margin: 0,
-                padding: '0 0 0 24px',
-                fontSize: '14px',
-                color: '#444',
-                display: 'grid',
-                gap: '8px'
-              }}>
-                <li>Carry a valid photo ID proof</li>
-                <li>Report to the exam center 30 minutes before exam time</li>
-                <li>Electronic devices are not allowed in the exam hall</li>
-              </ul>
+            {/* Action buttons */}
+            <div
+              style={{
+                marginTop: '24px',
+                display: 'flex',
+                justifyContent: 'center',
+                gap: '12px',
+                flexWrap: 'wrap',
+              }}
+            >
+              <button className="btn btn-primary" onClick={() => window.print()}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <polyline points="6 9 6 2 18 2 18 9" />
+                  <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+                  <rect x="6" y="14" width="12" height="8" />
+                </svg>
+                Print / PDF
+              </button>
+              <button className="btn btn-secondary" onClick={downloadAsImage}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                Download Image
+              </button>
+              <button className="btn btn-secondary" onClick={shareViaEmail}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                  <polyline points="22,6 12,13 2,6" />
+                </svg>
+                Email
+              </button>
             </div>
 
+            {/* Instructions Section */}
+            <div
+              style={{
+                marginTop: '30px',
+                padding: '20px',
+                backgroundColor: '#f9fafb',
+                borderRadius: '10px',
+                border: '1px solid rgba(209, 213, 219, 0.9)',
+              }}
+            >
+              <h3
+                style={{
+                  color: '#1d4ed8',
+                  fontSize: '16px',
+                  marginBottom: '12px',
+                  fontWeight: 'bold',
+                }}
+              >
+                Instructions:
+              </h3>
+              <ul
+                style={{
+                  margin: 0,
+                  padding: '0 0 0 24px',
+                  fontSize: '14px',
+                  color: '#4b5563',
+                  display: 'grid',
+                  gap: '8px',
+                }}
+              >
+                <li>Carry a valid photo ID proof.</li>
+                <li>Report to the exam center 30 minutes before exam time.</li>
+                <li>Electronic devices are not allowed in the exam hall.</li>
+                <li>Keep this hall ticket safe and bring it to the examination center.</li>
+              </ul>
+            </div>
           </div>
         )}
+
         <Upload isOpen={isUploadModalOpen} onClose={() => setIsUploadModalOpen(false)} />
       </div>
     </div>
